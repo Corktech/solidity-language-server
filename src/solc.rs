@@ -18,6 +18,22 @@ use tower_lsp::lsp_types::Url;
 /// invalidated after a successful `svm::install`.
 static INSTALLED_VERSIONS: OnceLock<Mutex<Vec<SemVer>>> = OnceLock::new();
 
+/// Convert a `Path` to a solc-compatible string. solc's standard-JSON format
+/// requires forward-slash separators in source keys and remappings; on Windows,
+/// `Path::to_string_lossy()` yields backslash-separated strings which solc
+/// silently fails to resolve, producing an empty AST and breaking all semantic
+/// queries (hover, goto, references, etc.).
+fn to_solc_path(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// Normalize an existing string path for solc input by replacing backslashes
+/// with forward slashes. Use when the input is already a `&str` (e.g. from a
+/// `to_string_lossy` fallback).
+fn normalize_solc_path(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 fn get_installed_versions() -> Vec<SemVer> {
     let mutex = INSTALLED_VERSIONS.get_or_init(|| Mutex::new(scan_installed_versions()));
     mutex.lock().unwrap().clone()
@@ -743,7 +759,7 @@ pub fn normalize_solc_output(mut solc_output: Value, project_root: Option<&Path>
         if let Some(root) = project_root {
             let path = Path::new(p);
             if path.is_relative() {
-                return root.join(path).to_string_lossy().into_owned();
+                return to_solc_path(&root.join(path));
             }
         }
         p.to_string()
@@ -923,8 +939,8 @@ pub async fn solc_ast(
     // can properly resolve `src/`, `lib/`, and remapped imports.
     let rel_path = Path::new(file_path)
         .strip_prefix(&config.root)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| file_path.to_string());
+        .map(to_solc_path)
+        .unwrap_or_else(|_| normalize_solc_path(file_path));
 
     let input = build_standard_json_input(&rel_path, &remappings, config, source_content);
     let raw_output = run_solc(&solc_binary, &input, &config.root).await?;
@@ -1199,8 +1215,8 @@ pub fn build_batch_standard_json_input_with_cache(
     for file in source_files {
         let rel_path = file
             .strip_prefix(&config.root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+            .map(to_solc_path)
+            .unwrap_or_else(|_| to_solc_path(file));
 
         // Try to use cached content so solc doesn't need to read from disk.
         let cached_content = content_cache.and_then(|cache| {
@@ -1249,8 +1265,8 @@ pub fn build_batch_standard_json_input_ast_only(
     for file in source_files {
         let rel_path = file
             .strip_prefix(root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+            .map(to_solc_path)
+            .unwrap_or_else(|_| to_solc_path(file));
         sources.insert(rel_path.clone(), json!({ "urls": [rel_path] }));
     }
 
@@ -1296,8 +1312,8 @@ pub fn build_parse_only_json_input(
     for file in source_files {
         let rel_path = file
             .strip_prefix(&config.root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| file.to_string_lossy().into_owned());
+            .map(to_solc_path)
+            .unwrap_or_else(|_| to_solc_path(file));
         sources.insert(rel_path.clone(), json!({ "urls": [rel_path] }));
     }
 
@@ -2005,6 +2021,29 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_to_solc_path_normalizes_separators() {
+        // On Windows, Path::to_string_lossy yields backslashes which solc
+        // silently rejects, producing an empty AST. to_solc_path must always
+        // emit forward slashes regardless of platform.
+        let p = std::path::PathBuf::from("contracts").join("core").join("Foo.sol");
+        let s = to_solc_path(&p);
+        assert!(!s.contains('\\'), "to_solc_path leaked a backslash: {s}");
+        assert_eq!(s, "contracts/core/Foo.sol");
+    }
+
+    #[test]
+    fn test_normalize_solc_path_strips_backslashes() {
+        assert_eq!(
+            normalize_solc_path("contracts\\core\\Foo.sol"),
+            "contracts/core/Foo.sol"
+        );
+        assert_eq!(
+            normalize_solc_path("contracts/core/Foo.sol"),
+            "contracts/core/Foo.sol"
         );
     }
 
