@@ -1267,10 +1267,8 @@ impl ForgeLsp {
                     }
                 }
 
-                eprintln!("[trace-pidx] calling solc_project_index");
                 match crate::solc::solc_project_index(&foundry_config, Some(&client), None).await {
                     Ok(ast_data) => {
-                        eprintln!("[trace-pidx] solc_project_index OK, building CachedBuild");
                         let mut new_build = crate::goto::CachedBuild::new(
                             ast_data,
                             0,
@@ -1282,14 +1280,12 @@ impl ForgeLsp {
                             new_build.merge_missing_from(prev);
                         }
                         let source_count = new_build.nodes.len();
-                        eprintln!("[trace-pidx] CachedBuild built, source_count={}", source_count);
                         let cached_build = Arc::new(new_build);
                         let build_for_save = (*cached_build).clone();
                         ast_cache
                             .write()
                             .await
                             .insert(cache_key.clone().into(), cached_build);
-                        eprintln!("[trace-pidx] inserted into ast_cache, key_present_after={}", ast_cache.read().await.contains_key(&cache_key));
                         client
                             .log_message(
                                 MessageType::INFO,
@@ -1355,7 +1351,6 @@ impl ForgeLsp {
                             .await;
                     }
                     Err(e) => {
-                        eprintln!("[trace-pidx] solc_project_index ERR: {}", e);
                         client
                             .log_message(MessageType::WARNING, format!("project index failed: {e}"))
                             .await;
@@ -2735,11 +2730,6 @@ impl LanguageServer for ForgeLsp {
         // Eagerly build the project index on startup so cross-file features
         // (willRenameFiles, references, goto) work immediately — even before
         // the user opens any .sol file.
-        eprintln!(
-            "[trace-init-eager] gate use_solc={} full_project_scan={}",
-            self.use_solc,
-            self.settings.read().await.project_index.full_project_scan
-        );
         if self.use_solc && self.settings.read().await.project_index.full_project_scan {
             let cache_mode = self.settings.read().await.project_index.cache_mode.clone();
             self.project_indexed
@@ -2752,15 +2742,10 @@ impl LanguageServer for ForgeLsp {
             let sub_caches_loading_flag = self.sub_caches_loading.clone();
             let path_interner = self.path_interner.clone();
 
-            eprintln!("[trace-init-eager] cache_key_present={} root={}", cache_key.is_some(), foundry_config.root.display());
-
             tokio::spawn(async move {
-                eprintln!("[trace-init-pidx] task entered");
                 let Some(cache_key) = cache_key else {
-                    eprintln!("[trace-init-pidx] no cache_key, returning");
                     return;
                 };
-                eprintln!("[trace-init-pidx] cache_key ok");
                 if !foundry_config.root.is_dir() {
                     client
                         .log_message(
@@ -2971,11 +2956,6 @@ impl LanguageServer for ForgeLsp {
 
                 let src_count = src_files.len();
                 let full_count = full_files.len();
-                eprintln!("[trace-init-pidx] discovered src_count={} full_count={}", src_count, full_count);
-                if src_count <= 1 {
-                    let sample: Vec<String> = src_files.iter().take(5).map(|p| p.display().to_string()).collect();
-                    eprintln!("[trace-init-pidx] LOW src_count, sample={:?} root={}", sample, foundry_config.root.display());
-                }
 
                 // ── Phase 1: src-only compile ──
                 let phase1_start = std::time::Instant::now();
@@ -2992,7 +2972,6 @@ impl LanguageServer for ForgeLsp {
                     })
                     .await;
 
-                eprintln!("[trace-init-pidx] starting phase1 solc_project_index_scoped");
                 let phase1_ok = match crate::solc::solc_project_index_scoped(
                     &foundry_config,
                     Some(&client),
@@ -3002,7 +2981,6 @@ impl LanguageServer for ForgeLsp {
                 .await
                 {
                     Ok(ast_data) => {
-                        eprintln!("[trace-init-pidx] phase1 OK");
                         let mut new_build = crate::goto::CachedBuild::new(
                             ast_data,
                             0,
@@ -3012,12 +2990,10 @@ impl LanguageServer for ForgeLsp {
                             new_build.merge_missing_from(prev);
                         }
                         let source_count = new_build.nodes.len();
-                        eprintln!("[trace-init-pidx] phase1 source_count={}", source_count);
                         ast_cache
                             .write()
                             .await
                             .insert(cache_key.clone().into(), Arc::new(new_build));
-                        eprintln!("[trace-init-pidx] phase1 inserted into ast_cache");
                         client
                             .log_message(
                                 MessageType::INFO,
@@ -3046,7 +3022,6 @@ impl LanguageServer for ForgeLsp {
                         true
                     }
                     Err(e) => {
-                        eprintln!("[trace-init-pidx] phase1 ERR: {}", e);
                         client
                             .log_message(
                                 MessageType::WARNING,
