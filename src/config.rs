@@ -114,7 +114,14 @@ impl Default for FileOperationsSettings {
 pub struct ProjectIndexSettings {
     /// If true, run a full-project index scan at startup / first successful build.
     /// If false, skip eager full-project scanning for faster startup.
-    #[serde(default)]
+    ///
+    /// Defaults to `true` so that partial `initializationOptions` structs
+    /// (e.g. `{ "projectIndex": {} }` without an explicit `fullProjectScan`)
+    /// still trigger eager indexing. Some clients drop the
+    /// `initializationOptions` payload entirely or forward only a subset of
+    /// keys (claude-code#15148); flipping the field-level serde default to
+    /// `default_true` keeps cross-file features working in those cases.
+    #[serde(default = "default_true")]
     pub full_project_scan: bool,
     /// Persistent reference cache mode:
     /// - `v2` (default): per-file shard cache
@@ -1118,6 +1125,26 @@ src = "contracts"
             }
         });
         let s = parse_settings(&value);
+        assert_eq!(s.project_index.cache_mode, ProjectIndexCacheMode::V2);
+        assert!(!s.project_index.incremental_edit_reindex);
+    }
+
+    /// Locks in the §8 F1 fallback: when an editor (e.g. Claude Code,
+    /// claude-code#15148) sends a partial `initializationOptions` struct
+    /// like `{"projectIndex": {}}` — direct form, no `solidity-language-server`
+    /// wrapper, no explicit `fullProjectScan` — `full_project_scan` must
+    /// still default to `true` so eager indexing fires. Field-level
+    /// `#[serde(default = "default_true")]` is what makes this work.
+    #[test]
+    fn test_parse_settings_partial_struct_defaults_to_true() {
+        let value = serde_json::json!({
+            "projectIndex": {}
+        });
+        let s = parse_settings(&value);
+        assert!(
+            s.project_index.full_project_scan,
+            "partial projectIndex struct must keep full_project_scan = true"
+        );
         assert_eq!(s.project_index.cache_mode, ProjectIndexCacheMode::V2);
         assert!(!s.project_index.incremental_edit_reindex);
     }

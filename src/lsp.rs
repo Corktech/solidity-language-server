@@ -1464,6 +1464,41 @@ fn update_imports_on_delete_enabled(settings: &crate::config::Settings) -> bool 
     settings.file_operations.update_imports_on_delete
 }
 
+/// Build the disk-loaded portion of the workspace/symbol input: for every
+/// path in `project_paths` that is not already represented in `open_uris`,
+/// resolve it to an absolute path (joining `project_root` if relative),
+/// read its contents from disk, and emit a `(Url, String)` tuple.
+///
+/// Used by the `symbol` handler so workspace/symbol covers cross-file
+/// project hits even when only a single .sol file is open in the editor.
+/// Files that fail to read or that produce a non-`file://` URL are skipped
+/// silently — workspace/symbol is best-effort.
+fn collect_disk_loaded_project_files(
+    open_uris: &HashSet<String>,
+    project_paths: &HashMap<crate::types::RelPath, crate::types::AbsPath>,
+    project_root: &Path,
+) -> Vec<(Url, String)> {
+    let mut out = Vec::new();
+    for abs in project_paths.values() {
+        let p = Path::new(abs.as_str());
+        let p_buf = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            project_root.join(p)
+        };
+        let Ok(uri) = Url::from_file_path(&p_buf) else {
+            continue;
+        };
+        if open_uris.contains(&uri.to_string()) {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&p_buf) {
+            out.push((uri, content));
+        }
+    }
+    out
+}
+
 fn start_or_mark_project_cache_sync_pending(
     pending: &std::sync::atomic::AtomicBool,
     running: &std::sync::atomic::AtomicBool,
@@ -4999,8 +5034,11 @@ impl LanguageServer for ForgeLsp {
             .log_message(MessageType::INFO, "got workspace/symbol request")
             .await;
 
-        // Collect sources from open files in text_cache
-        let files: Vec<(Url, String)> = {
+        // Collect sources from open files in text_cache, plus disk-loaded
+        // sources for any project files covered by the project index but not
+        // yet open in the editor. This makes workspace/symbol return cross-file
+        // hits even when only a single .sol file is open.
+        let mut files: Vec<(Url, String)> = {
             let cache = self.text_cache.read().await;
             cache
                 .iter()
@@ -5010,6 +5048,15 @@ impl LanguageServer for ForgeLsp {
                 })
                 .collect()
         };
+        let open_uris: HashSet<String> = files.iter().map(|(u, _)| u.to_string()).collect();
+        if let Some(project_build) = self.ensure_project_cached_build().await {
+            let project_root = self.foundry_config.read().await.root.clone();
+            files.extend(collect_disk_loaded_project_files(
+                &open_uris,
+                &project_build.path_to_abs,
+                &project_root,
+            ));
+        }
 
         let mut all_symbols = symbols::extract_workspace_symbols(&files);
         if !params.query.is_empty() {
@@ -7250,11 +7297,15 @@ impl LanguageServer for ForgeLsp {
 #[cfg(test)]
 mod tests {
     use super::{
-        start_or_mark_project_cache_sync_pending, stop_project_cache_sync_worker_or_reclaim,
-        take_project_cache_sync_pending, try_claim_project_cache_dirty,
-        update_imports_on_delete_enabled,
+        collect_disk_loaded_project_files, start_or_mark_project_cache_sync_pending,
+        stop_project_cache_sync_worker_or_reclaim, take_project_cache_sync_pending,
+        try_claim_project_cache_dirty, update_imports_on_delete_enabled,
     };
+    use crate::symbols;
+    use crate::types::{AbsPath, RelPath};
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, Ordering};
+    use tower_lsp::lsp_types::Url;
 
     #[test]
     fn update_imports_on_delete_enabled_defaults_true() {
@@ -7328,5 +7379,102 @@ mod tests {
         dirty.store(true, Ordering::Release);
         assert!(try_claim_project_cache_dirty(&dirty));
         assert!(!dirty.load(Ordering::Acquire));
+    }
+
+    // ── workspace/symbol cross-file augmentation ─────────────────────────
+
+    fn write_sol(dir: &std::path::Path, rel: &str, body: &str) -> std::path::PathBuf {
+        let abs = dir.join(rel);
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&abs, body).unwrap();
+        abs
+    }
+
+    /// Round 1 regression: workspace/symbol only scanned `text_cache`, so
+    /// it returned hits from the single open file. With the project index
+    /// supplied, the helper must read the unopened files from disk and
+    /// `extract_workspace_symbols` must then surface their symbols too.
+    #[test]
+    fn test_workspace_symbol_returns_cross_file_when_index_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_sol(
+            root,
+            "contracts/Foo.sol",
+            "pragma solidity ^0.8.30;\ncontract Foo { function f1() public {} }\n",
+        );
+        write_sol(
+            root,
+            "contracts/Bar.sol",
+            "pragma solidity ^0.8.30;\ncontract Bar { function f2() public {} }\n",
+        );
+
+        let mut project_paths: HashMap<RelPath, AbsPath> = HashMap::new();
+        project_paths.insert(
+            RelPath::new("contracts/Foo.sol"),
+            AbsPath::new("contracts/Foo.sol"),
+        );
+        project_paths.insert(
+            RelPath::new("contracts/Bar.sol"),
+            AbsPath::new("contracts/Bar.sol"),
+        );
+
+        // No files open in editor.
+        let open_uris: HashSet<String> = HashSet::new();
+        let disk_files = collect_disk_loaded_project_files(&open_uris, &project_paths, root);
+        assert_eq!(disk_files.len(), 2, "must load both unopened project files");
+
+        let symbols = symbols::extract_workspace_symbols(&disk_files);
+        let names: std::collections::BTreeSet<_> =
+            symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains("Foo"), "missing Foo: got {names:?}");
+        assert!(names.contains("Bar"), "missing Bar: got {names:?}");
+        let distinct_files: std::collections::BTreeSet<_> =
+            symbols.iter().map(|s| s.location.uri.to_string()).collect();
+        assert!(
+            distinct_files.len() >= 2,
+            "expected symbols from at least 2 files, got {distinct_files:?}"
+        );
+    }
+
+    /// When the helper gets an empty project map (proxy for "no project
+    /// build available"), it returns nothing — the caller falls back to the
+    /// open-files-only behaviour. Also verifies that already-open URIs are
+    /// skipped so we don't double-load them from disk.
+    #[test]
+    fn test_workspace_symbol_open_files_only_when_no_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let foo_abs = write_sol(
+            root,
+            "contracts/Foo.sol",
+            "pragma solidity ^0.8.30;\ncontract Foo {}\n",
+        );
+
+        // Empty project map ⇒ no disk files, regardless of open set.
+        let empty_paths: HashMap<RelPath, AbsPath> = HashMap::new();
+        let open_uris: HashSet<String> = HashSet::new();
+        let disk_files = collect_disk_loaded_project_files(&open_uris, &empty_paths, root);
+        assert!(
+            disk_files.is_empty(),
+            "no project paths means no disk files"
+        );
+
+        // Project map that points at an already-open file ⇒ helper skips it.
+        let mut project_paths: HashMap<RelPath, AbsPath> = HashMap::new();
+        project_paths.insert(
+            RelPath::new("contracts/Foo.sol"),
+            AbsPath::new("contracts/Foo.sol"),
+        );
+        let foo_uri = Url::from_file_path(&foo_abs).unwrap().to_string();
+        let mut open_uris: HashSet<String> = HashSet::new();
+        open_uris.insert(foo_uri);
+        let disk_files = collect_disk_loaded_project_files(&open_uris, &project_paths, root);
+        assert!(
+            disk_files.is_empty(),
+            "open URIs must be excluded from disk-loaded set"
+        );
     }
 }

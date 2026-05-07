@@ -1222,6 +1222,27 @@ pub fn signature_help(
     })
 }
 
+/// Resolve an LSP `file://` URI to the canonical `AbsPath` recorded in
+/// `path_to_abs`.
+///
+/// On Windows, `Url::to_file_path()` returns a path with backslashes
+/// (e.g. `C:\Users\me\proj\contracts\Foo.sol`), but `path_to_abs` keys
+/// are canonicalized to forward slashes (e.g. `contracts/Foo.sol`).
+/// Without normalization, the `ends_with` test below silently misses
+/// every key on Windows. Run the URI-derived path through
+/// `canonical_path_string` first.
+fn resolve_uri_to_abs(
+    file_uri: &Url,
+    path_to_abs: &HashMap<crate::types::RelPath, crate::types::AbsPath>,
+) -> Option<crate::types::AbsPath> {
+    let file_path = file_uri.to_file_path().ok()?;
+    let file_path_str = crate::solc::canonical_path_string(&file_path);
+    path_to_abs
+        .iter()
+        .find(|(k, _)| file_path_str.ends_with(k.as_str()))
+        .map(|(_, v)| v.clone())
+}
+
 /// Produce hover information for the symbol at the given position.
 pub fn hover_info(
     cached_build: &crate::goto::CachedBuild,
@@ -1236,15 +1257,11 @@ pub fn hover_info(
     let doc_index = &cached_build.doc_index;
     let hint_index = &cached_build.hint_index;
 
-    // Resolve the file path
-    let file_path = file_uri.to_file_path().ok()?;
-    let file_path_str = file_path.to_str()?;
-
-    // Find the absolute path for this file
-    let abs_path = path_to_abs
-        .iter()
-        .find(|(k, _)| file_path_str.ends_with(k.as_str()))
-        .map(|(_, v)| v.clone())?;
+    // Resolve the file path. Normalize to forward-slash form so that lookup
+    // into `path_to_abs` (whose keys are canonicalized) works on Windows —
+    // `Url::to_file_path()` returns native-separator paths, which would not
+    // `ends_with` a forward-slash key. Symmetric with `src/goto.rs:910`.
+    let abs_path = resolve_uri_to_abs(file_uri, path_to_abs)?;
 
     let byte_pos = pos_to_bytes(source_bytes, position);
 
@@ -2350,5 +2367,49 @@ mod tests {
         let ast = load_test_ast();
         let build = crate::goto::CachedBuild::new(ast, 0, None);
         assert!(mapping_signature_help_typed(&build.decl_index, "owner").is_none());
+    }
+
+    // ── Path-lookup canonicalization (Windows fix) ────────────────────────
+
+    /// Round 1 regression: on Windows `Url::to_file_path()` yields a
+    /// backslash path, but `path_to_abs` keys are forward-slash. Without
+    /// canonicalization the `ends_with` lookup misses every key and hover
+    /// returns "No hover information available". Gated to Windows because
+    /// `Url::from_file_path` rejects Windows-style absolute paths on Linux.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_hover_info_path_lookup_windows_backslash() {
+        use crate::types::{AbsPath, RelPath};
+        let mut path_to_abs: HashMap<RelPath, AbsPath> = HashMap::new();
+        path_to_abs.insert(
+            RelPath::new("contracts/Foo.sol"),
+            AbsPath::new("C:/Users/test/contracts/Foo.sol"),
+        );
+        let uri = Url::from_file_path(r"C:\Users\test\contracts\Foo.sol")
+            .expect("from_file_path on Windows-style absolute path");
+        let abs = resolve_uri_to_abs(&uri, &path_to_abs)
+            .expect("Windows-backslash URI must resolve via canonicalized lookup");
+        assert_eq!(abs.as_str(), "C:/Users/test/contracts/Foo.sol");
+    }
+
+    /// Cross-platform regression guard for the forward-slash branch — both
+    /// Linux and Windows agree on this shape.
+    #[test]
+    fn test_hover_info_path_lookup_unix_forward_slash() {
+        use crate::types::{AbsPath, RelPath};
+        let mut path_to_abs: HashMap<RelPath, AbsPath> = HashMap::new();
+        path_to_abs.insert(
+            RelPath::new("contracts/Foo.sol"),
+            AbsPath::new("/home/test/proj/contracts/Foo.sol"),
+        );
+        // Use whatever absolute-path shape the host treats as a `file://`
+        // URL — on Windows we stay in C:/ form, on Unix we stay in /home form.
+        #[cfg(target_os = "windows")]
+        let uri = Url::from_file_path(r"C:\home\test\proj\contracts\Foo.sol").unwrap();
+        #[cfg(not(target_os = "windows"))]
+        let uri = Url::from_file_path("/home/test/proj/contracts/Foo.sol").unwrap();
+        let abs = resolve_uri_to_abs(&uri, &path_to_abs)
+            .expect("forward-slash key must match canonicalized URI path");
+        assert_eq!(abs.as_str(), "/home/test/proj/contracts/Foo.sol");
     }
 }
