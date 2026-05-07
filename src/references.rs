@@ -230,15 +230,11 @@ pub fn goto_references_cached(
     include_declaration: bool,
 ) -> Vec<Location> {
     let all_refs = all_references(&build.nodes);
-    let path = match file_uri.to_file_path() {
-        Ok(p) => p,
-        Err(_) => return vec![],
-    };
-    let path_str = match path.to_str() {
+    let path_str = match crate::solc::canonical_path_from_url(file_uri) {
         Some(s) => s,
         None => return vec![],
     };
-    let abs_path = match build.path_to_abs.get(path_str) {
+    let abs_path = match build.path_to_abs.get(path_str.as_str()) {
         Some(ap) => ap,
         None => return vec![],
     };
@@ -414,9 +410,8 @@ pub fn resolve_target_location(
     position: Position,
     source_bytes: &[u8],
 ) -> Option<(String, usize)> {
-    let path = file_uri.to_file_path().ok()?;
-    let path_str = path.to_str()?;
-    let abs_path = build.path_to_abs.get(path_str)?;
+    let path_str = crate::solc::canonical_path_from_url(file_uri)?;
+    let abs_path = build.path_to_abs.get(path_str.as_str())?;
     let byte_position = pos_to_bytes(source_bytes, position);
 
     // Check if cursor is on the qualifier segment of a qualified path.
