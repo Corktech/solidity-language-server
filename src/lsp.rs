@@ -799,35 +799,6 @@ impl ForgeLsp {
         // This is the default path — fast and direct.
         let (lint_result, build_result, ast_result) = if self.use_solc {
             let foundry_cfg = self.foundry_config_for_file(&file_path).await;
-
-            // If we discovered a real foundry project (foundry.toml ancestor)
-            // that differs from the workspace root the server initialized
-            // with, propagate it to `self.foundry_config` and re-arm the
-            // project index. This fixes the case where Claude Code spawns the
-            // LSP with a workspace root pointing at the user's home dir
-            // (because that's the editor cwd) instead of the actual project
-            // root — without this, the eager indexer at startup discovers 0
-            // source files and references stay single-file-only forever.
-            {
-                let current_root = self.foundry_config.read().await.root.clone();
-                let new_root = foundry_cfg.root.clone();
-                let new_root_has_toml = new_root.is_dir() && new_root.join("foundry.toml").is_file();
-                if new_root_has_toml && new_root != current_root {
-                    eprintln!(
-                        "[trace-rebase] foundry root corrected: {} -> {}",
-                        current_root.display(),
-                        new_root.display()
-                    );
-                    {
-                        let mut fc = self.foundry_config.write().await;
-                        *fc = foundry_cfg.clone();
-                    }
-                    // Reset so the eager-index spawn at the end of on_change
-                    // fires against the corrected root.
-                    self.project_indexed
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
             // Pass the editor's live buffer text directly so solc compiles
             // what the user sees, not the on-disk version.
             let solc_future = crate::solc::solc_ast(
