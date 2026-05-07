@@ -1828,7 +1828,7 @@ async fn run_did_save(this: ForgeLsp, params: DidSaveTextDocumentParams) {
 
     let saved_uri = params.text_document.uri.clone();
     if let Ok(saved_file_path) = saved_uri.to_file_path() {
-        let saved_abs = saved_file_path.to_string_lossy().to_string();
+        let saved_abs = crate::solc::canonical_path_string(&saved_file_path);
         this.project_cache_changed_files
             .write()
             .await
@@ -4642,7 +4642,7 @@ impl LanguageServer for ForgeLsp {
             None => return Ok(None),
         };
         let mut project_build = self.ensure_project_cached_build().await;
-        let current_abs = file_path.to_string_lossy().to_string();
+        let current_abs = crate::solc::canonical_path_string(&file_path);
         if self.use_solc
             && self.settings.read().await.project_index.full_project_scan
             && project_build
@@ -5938,12 +5938,12 @@ impl LanguageServer for ForgeLsp {
                 if let Ok(old_uri) = Url::parse(&file.old_uri)
                     && let Ok(old_path) = old_uri.to_file_path()
                 {
-                    changed.insert(old_path.to_string_lossy().to_string());
+                    changed.insert(crate::solc::canonical_path_string(&old_path));
                 }
                 if let Ok(new_uri) = Url::parse(&file.new_uri)
                     && let Ok(new_path) = new_uri.to_file_path()
                 {
-                    changed.insert(new_path.to_string_lossy().to_string());
+                    changed.insert(crate::solc::canonical_path_string(&new_path));
                 }
             }
         }
@@ -6297,7 +6297,7 @@ impl LanguageServer for ForgeLsp {
                 if let Ok(uri) = Url::parse(&file.uri)
                     && let Ok(path) = uri.to_file_path()
                 {
-                    changed.insert(path.to_string_lossy().to_string());
+                    changed.insert(crate::solc::canonical_path_string(&path));
                 }
             }
         }
@@ -6528,7 +6528,7 @@ impl LanguageServer for ForgeLsp {
                 if let Ok(uri) = Url::parse(&file.uri)
                     && let Ok(path) = uri.to_file_path()
                 {
-                    changed.insert(path.to_string_lossy().to_string());
+                    changed.insert(crate::solc::canonical_path_string(&path));
                 }
             }
         }
@@ -6810,15 +6810,12 @@ impl LanguageServer for ForgeLsp {
             None => return Ok(None),
         };
 
-        let path_str = match file_path.to_str() {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-        let abs_path = match cached_build.path_to_abs.get(path_str) {
+        let path_str = crate::solc::canonical_path_string(&file_path);
+        let abs_path = match cached_build.path_to_abs.get(path_str.as_str()) {
             Some(ap) => ap.clone(),
             None => {
                 // Try using the file path directly as the abs path key.
-                crate::types::AbsPath::new(path_str)
+                crate::types::AbsPath::new(path_str.as_str())
             }
         };
 
