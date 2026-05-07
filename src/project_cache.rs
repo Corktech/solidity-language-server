@@ -185,10 +185,8 @@ fn file_hash(path: &Path) -> Option<String> {
 }
 
 fn relative_to_root(root: &Path, file: &Path) -> String {
-    file.strip_prefix(root)
-        .unwrap_or(file)
-        .to_string_lossy()
-        .replace('\\', "/")
+    let rel = file.strip_prefix(root).unwrap_or(file);
+    crate::solc::canonical_path_string(rel)
 }
 
 fn current_file_hashes(
@@ -286,7 +284,7 @@ pub fn upsert_reference_cache_v2_with_report(
         serde_json::from_slice::<PersistedReferenceCacheV2>(&bytes).unwrap_or(
             PersistedReferenceCacheV2 {
                 schema_version: CACHE_SCHEMA_VERSION_V2,
-                project_root: config.root.to_string_lossy().to_string(),
+                project_root: crate::solc::canonical_path_string(&config.root),
                 config_fingerprint: config_fingerprint(config),
                 file_hashes: BTreeMap::new(),
                 file_hash_history: BTreeMap::new(),
@@ -299,7 +297,7 @@ pub fn upsert_reference_cache_v2_with_report(
     } else {
         PersistedReferenceCacheV2 {
             schema_version: CACHE_SCHEMA_VERSION_V2,
-            project_root: config.root.to_string_lossy().to_string(),
+            project_root: crate::solc::canonical_path_string(&config.root),
             config_fingerprint: config_fingerprint(config),
             file_hashes: BTreeMap::new(),
             file_hash_history: BTreeMap::new(),
@@ -311,12 +309,12 @@ pub fn upsert_reference_cache_v2_with_report(
     };
 
     // Reset metadata when root/fingerprint changed.
-    if meta.project_root != config.root.to_string_lossy()
+    if meta.project_root != crate::solc::canonical_path_string(&config.root)
         || meta.config_fingerprint != config_fingerprint(config)
     {
         meta = PersistedReferenceCacheV2 {
             schema_version: CACHE_SCHEMA_VERSION_V2,
-            project_root: config.root.to_string_lossy().to_string(),
+            project_root: crate::solc::canonical_path_string(&config.root),
             config_fingerprint: config_fingerprint(config),
             file_hashes: BTreeMap::new(),
             file_hash_history: BTreeMap::new(),
@@ -467,7 +465,7 @@ pub fn save_reference_cache_with_report(
 
     let persisted_v2 = PersistedReferenceCacheV2 {
         schema_version: CACHE_SCHEMA_VERSION_V2,
-        project_root: config.root.to_string_lossy().to_string(),
+        project_root: crate::solc::canonical_path_string(&config.root),
         config_fingerprint: config_fingerprint(config),
         file_hashes: file_hashes.clone(),
         file_hash_history: {
@@ -653,7 +651,7 @@ pub fn changed_files_since_v2_cache(
             persisted.schema_version, CACHE_SCHEMA_VERSION_V2
         ));
     }
-    if persisted.project_root != config.root.to_string_lossy() {
+    if persisted.project_root != crate::solc::canonical_path_string(&config.root) {
         return Err("project root mismatch".to_string());
     }
     if persisted.config_fingerprint != config_fingerprint(config) {
@@ -741,7 +739,7 @@ pub fn load_reference_cache_with_report(
                 started.elapsed().as_millis(),
             );
         }
-        if persisted.project_root != config.root.to_string_lossy() {
+        if persisted.project_root != crate::solc::canonical_path_string(&config.root) {
             return miss(
                 "project root mismatch".to_string(),
                 0,
@@ -829,7 +827,7 @@ pub fn load_reference_cache_with_report(
             let saved: std::collections::HashSet<&String> = persisted.file_hashes.keys().collect();
             project_files.iter().all(|abs| {
                 pathdiff::diff_paths(abs, &config.root)
-                    .and_then(|rel| rel.to_str().map(|s| s.to_string()))
+                    .map(|rel| crate::solc::canonical_path_string(&rel))
                     .map(|rel| saved.contains(&rel))
                     .unwrap_or(false)
             })
@@ -894,5 +892,20 @@ mod tests {
         let bytes = std::fs::read(saved_path).unwrap();
         let parsed: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, input);
+    }
+}
+
+#[cfg(test)]
+mod tests_path_canonicalization {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_to_root_emits_forward_slashes() {
+        let root = PathBuf::from("/proj");
+        let file = PathBuf::from("/proj").join("src").join("Foo.sol");
+        let rel = relative_to_root(&root, &file);
+        assert!(!rel.contains('\\'));
+        assert_eq!(rel, "src/Foo.sol");
     }
 }
