@@ -123,7 +123,10 @@ pub struct AbsPath(String);
 
 impl AbsPath {
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(crate::solc::canonical_path_str(&s.into()))
+    }
+    pub fn from_path(p: &std::path::Path) -> Self {
+        Self::new(crate::solc::canonical_path_string(p))
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -187,7 +190,10 @@ pub struct RelPath(String);
 
 impl RelPath {
     pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
+        Self(crate::solc::canonical_path_str(&s.into()))
+    }
+    pub fn from_path(p: &std::path::Path) -> Self {
+        Self::new(crate::solc::canonical_path_string(p))
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -985,5 +991,25 @@ mod tests {
         let map = interner.to_id_to_path_map();
         assert_eq!(map.get("0").map(|s| s.as_str()), Some("src/A.sol"));
         assert_eq!(map.get("1").map(|s| s.as_str()), Some("src/B.sol"));
+    }
+
+    #[test]
+    fn abs_path_new_normalizes_backslashes() {
+        let a = AbsPath::new("a\\b\\c.sol");
+        assert_eq!(a.as_str(), "a/b/c.sol");
+    }
+
+    #[test]
+    fn rel_path_new_normalizes_backslashes() {
+        let r = RelPath::new("src\\Foo.sol");
+        assert_eq!(r.as_str(), "src/Foo.sol");
+    }
+
+    #[test]
+    fn abs_path_from_path_canonicalizes() {
+        let pb = std::path::PathBuf::from("a").join("b").join("c.sol");
+        let a = AbsPath::from_path(&pb);
+        assert!(!a.as_str().contains('\\'));
+        assert!(a.as_str().ends_with("a/b/c.sol"));
     }
 }

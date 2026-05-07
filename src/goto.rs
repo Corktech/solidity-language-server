@@ -907,13 +907,14 @@ pub fn goto_bytes(
     uri: &str,
     position: usize,
 ) -> Option<(String, usize, usize)> {
-    let path = match uri.starts_with("file://") {
-        true => &uri[7..],
-        false => uri,
+    let path_str = if let Some(stripped) = uri.strip_prefix("file://") {
+        crate::solc::canonical_path_str(stripped)
+    } else {
+        crate::solc::canonical_path_str(uri)
     };
 
     // Get absolute path for this file
-    let abs_path = path_to_abs.get(path)?;
+    let abs_path = path_to_abs.get(path_str.as_str())?;
 
     // Get nodes for the current file only
     let current_file_nodes = nodes.get(abs_path)?;
@@ -1033,9 +1034,8 @@ fn resolve_qualifier_goto(
     file_uri: &Url,
     byte_position: usize,
 ) -> Option<Location> {
-    let path = file_uri.to_file_path().ok()?;
-    let path_str = path.to_str()?;
-    let abs_path = build.path_to_abs.get(path_str)?;
+    let path_str = crate::solc::canonical_path_from_url(file_uri)?;
+    let abs_path = build.path_to_abs.get(path_str.as_str())?;
     let file_nodes = build.nodes.get(abs_path)?;
 
     // Find the IdentifierPath node under the cursor.
@@ -1180,11 +1180,8 @@ pub fn goto_declaration_by_name(
     name: &str,
     byte_hint: usize,
 ) -> Option<Location> {
-    let path = match file_uri.as_ref().starts_with("file://") {
-        true => &file_uri.as_ref()[7..],
-        false => file_uri.as_ref(),
-    };
-    let abs_path = cached_build.path_to_abs.get(path)?;
+    let path_str = crate::solc::canonical_path_from_url(file_uri)?;
+    let abs_path = cached_build.path_to_abs.get(path_str.as_str())?;
     // Read the built source from disk to extract identifier text at src ranges
     let built_source = std::fs::read_to_string(abs_path).ok()?;
 

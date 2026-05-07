@@ -23,15 +23,43 @@ static INSTALLED_VERSIONS: OnceLock<Mutex<Vec<SemVer>>> = OnceLock::new();
 /// `Path::to_string_lossy()` yields backslash-separated strings which solc
 /// silently fails to resolve, producing an empty AST and breaking all semantic
 /// queries (hover, goto, references, etc.).
-fn to_solc_path(p: &Path) -> String {
+pub fn to_solc_path(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
 /// Normalize an existing string path for solc input by replacing backslashes
 /// with forward slashes. Use when the input is already a `&str` (e.g. from a
 /// `to_string_lossy` fallback).
-fn normalize_solc_path(s: &str) -> String {
+pub fn normalize_solc_path(s: &str) -> String {
     s.replace('\\', "/")
+}
+
+/// Canonical path-key form used throughout the LSP for hash-map keys
+/// (`CachedBuild.path_to_abs`, `CachedBuild.nodes`, completion caches,
+/// `project_cache_changed_files`, persisted cache fields).
+///
+/// Always emits forward-slash separators regardless of platform. This is
+/// the format solc emits in `absolutePath` (post-`to_solc_path` fix), so
+/// using it for both write-keys and lookup-keys guarantees parity.
+pub fn canonical_path_string(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
+/// Canonical-form variant when the input is already a `&str` (e.g. coming
+/// from a serialized cache or a URI).
+pub fn canonical_path_str(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
+/// Convert an LSP `Url` to a canonical key for look-up against the
+/// in-memory caches. Strips the `file://` scheme, decodes percent-escapes
+/// via `Url::to_file_path()`, and normalizes separators.
+///
+/// Returns `None` only when the URI cannot be converted to a filesystem
+/// path (non-`file:` scheme).
+pub fn canonical_path_from_url(url: &Url) -> Option<String> {
+    let path = url.to_file_path().ok()?;
+    Some(canonical_path_string(&path))
 }
 
 fn get_installed_versions() -> Vec<SemVer> {
