@@ -2076,6 +2076,31 @@ mod tests {
     }
 
     #[test]
+    fn test_canonical_path_string_normalizes_separators() {
+        let p = std::path::PathBuf::from("a").join("b").join("c.sol");
+        let s = canonical_path_string(&p);
+        assert!(!s.contains('\\'), "canonical_path_string leaked a backslash: {s}");
+        assert_eq!(s, "a/b/c.sol");
+    }
+
+    #[test]
+    fn test_canonical_path_str_idempotent_on_forward_slash() {
+        assert_eq!(canonical_path_str("a/b/c.sol"), "a/b/c.sol");
+        assert_eq!(canonical_path_str("a\\b\\c.sol"), "a/b/c.sol");
+        assert_eq!(canonical_path_str("a\\b/c.sol"), "a/b/c.sol");
+    }
+
+    #[test]
+    fn test_canonical_path_from_url_round_trip() {
+        use tower_lsp::lsp_types::Url;
+        let pb = std::path::PathBuf::from(if cfg!(windows) { "C:\\tmp\\foo.sol" } else { "/tmp/foo.sol" });
+        let url = Url::from_file_path(&pb).unwrap();
+        let canon = canonical_path_from_url(&url).unwrap();
+        assert!(!canon.contains('\\'));
+        assert!(canon.ends_with("foo.sol"));
+    }
+
+    #[test]
     fn test_build_standard_json_input() {
         let config = FoundryConfig::default();
         let input = build_standard_json_input(
