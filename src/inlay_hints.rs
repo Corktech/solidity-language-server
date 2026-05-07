@@ -183,9 +183,9 @@ pub fn inlay_hints(
     range: Range,
     live_source: &[u8],
 ) -> Vec<InlayHint> {
-    let path_str = match uri.to_file_path() {
-        Ok(p) => p.to_str().unwrap_or("").to_string(),
-        Err(_) => return vec![],
+    let path_str = match crate::solc::canonical_path_from_url(uri) {
+        Some(s) => s,
+        None => return vec![],
     };
 
     let abs = match build

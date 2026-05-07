@@ -2165,7 +2165,7 @@ fn collect_sol_files(
 
         // 1. Relative path (always emitted)
         if let Some(rel) = pathdiff::diff_paths(&path, current_dir) {
-            let s = rel.to_string_lossy().to_string();
+            let s = crate::solc::canonical_path_string(&rel);
             let label = if s.starts_with("../") || s.starts_with("./") {
                 s
             } else {
@@ -2181,9 +2181,8 @@ fn collect_sol_files(
         //         → label = "forge-std/Test.sol"
         for (prefix, target_abs) in remappings {
             if let Ok(suffix) = path.strip_prefix(target_abs) {
-                let suffix_str = suffix
-                    .to_string_lossy()
-                    .trim_start_matches(['/', '\\'])
+                let suffix_str = crate::solc::canonical_path_string(suffix)
+                    .trim_start_matches('/')
                     .to_string();
                 let label = format!("{}{}", prefix, suffix_str);
                 out.push(make_import_item(label, typed_range));

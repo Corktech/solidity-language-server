@@ -464,7 +464,7 @@ impl LintConfig {
         // "test/**/*" work correctly.
         let relative = file_path.strip_prefix(&self.root).unwrap_or(file_path);
 
-        let rel_str = relative.to_string_lossy();
+        let rel_str = crate::solc::canonical_path_string(relative);
 
         for pattern in &self.ignore_patterns {
             if pattern.matches(&rel_str) {
