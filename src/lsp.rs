@@ -519,18 +519,9 @@ impl ForgeLsp {
         }
 
         let settings = self.settings.read().await.clone();
-        eprintln!(
-            "[trace-ecb] entry use_solc={} full_project_scan={} settings_from_init={} will_skip={}",
-            self.use_solc,
-            settings.project_index.full_project_scan,
-            self.settings_from_init
-                .load(std::sync::atomic::Ordering::Relaxed),
-            !self.use_solc || !settings.project_index.full_project_scan
-        );
         if !self.use_solc || !settings.project_index.full_project_scan {
             return None;
         }
-        eprintln!("[trace-ecb] proceeded past gate");
 
         let foundry_config = self.foundry_config.read().await.clone();
         if !foundry_config.root.is_dir() {
@@ -1122,20 +1113,6 @@ impl ForgeLsp {
         // invocation so that cross-file features (references, rename) discover
         // the full project. Runs asynchronously after diagnostics are published
         // so the user sees diagnostics immediately without waiting for the index.
-        {
-            let _trace_settings = self.settings.read().await;
-            eprintln!(
-                "[trace-eager] gate use_solc={} full_project_scan={} settings_from_init={} build_succeeded={} project_indexed={}",
-                self.use_solc,
-                _trace_settings.project_index.full_project_scan,
-                self.settings_from_init
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                build_succeeded,
-                self.project_indexed
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            );
-            drop(_trace_settings);
-        }
         if build_succeeded
             && self.use_solc
             && self.settings.read().await.project_index.full_project_scan
@@ -2323,10 +2300,6 @@ impl LanguageServer for ForgeLsp {
 
         // Read editor settings from initializationOptions.
         if let Some(init_opts) = &params.initialization_options {
-            eprintln!(
-                "[trace-init] raw init_opts: {}",
-                serde_json::to_string(init_opts).unwrap_or_default()
-            );
             let s = config::parse_settings(init_opts);
             self.client
                 .log_message(
@@ -2339,12 +2312,6 @@ impl LanguageServer for ForgeLsp {
                 .await;
             let mut settings = self.settings.write().await;
             *settings = s;
-            eprintln!(
-                "[trace-init] parsed full_project_scan={} cache_mode={:?} incremental_edit_reindex={} settings_from_init=true",
-                settings.project_index.full_project_scan,
-                settings.project_index.cache_mode,
-                settings.project_index.incremental_edit_reindex
-            );
             self.settings_from_init
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
