@@ -790,6 +790,35 @@ impl ForgeLsp {
         // This is the default path — fast and direct.
         let (lint_result, build_result, ast_result) = if self.use_solc {
             let foundry_cfg = self.foundry_config_for_file(&file_path).await;
+
+            // Some clients (notably Claude Code's plugin loader) initialize
+            // the LSP with a `root_uri` pointing at the editor's launch cwd
+            // (e.g. the user's home directory) rather than the actual
+            // Solidity project root. Under those clients the eager indexer
+            // at startup discovers zero source files and phase 1 fails with
+            // "no source files provided", leaving findReferences and
+            // workspaceSymbol single-file-only forever.
+            //
+            // Fix: when on_change resolves a per-file `foundry.toml` ancestor
+            // that differs from the workspace root, propagate it to
+            // `self.foundry_config` and reset `project_indexed` so the
+            // on_change-side eager spawn at the end of this function fires
+            // against the corrected root.
+            {
+                let current_root = self.foundry_config.read().await.root.clone();
+                let new_root = foundry_cfg.root.clone();
+                let new_root_has_toml =
+                    new_root.is_dir() && new_root.join("foundry.toml").is_file();
+                if new_root_has_toml && new_root != current_root {
+                    {
+                        let mut fc = self.foundry_config.write().await;
+                        *fc = foundry_cfg.clone();
+                    }
+                    self.project_indexed
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+
             // Pass the editor's live buffer text directly so solc compiles
             // what the user sees, not the on-disk version.
             let solc_future = crate::solc::solc_ast(
